@@ -1,0 +1,445 @@
+const TelegramBot = require('node-telegram-bot-api');
+// Import the xlsx library
+const XLSX = require("xlsx");
+const fs = require("fs");
+
+// Replace with your bot token
+const token = '7469831778:AAGtktOKYRA0tG6DzfF1A4u9weAnKHShZPk';
+
+// Create a bot instance
+const bot = new TelegramBot(token, { polling: true });
+
+// Create an object to store user data
+const userData = {};
+
+// Create an object to keep track of units for each user
+const userUnits = {};
+
+
+// Create an object to track the current keyboard for each user
+const currentKeyboards = {};
+
+rooms = [["living_room", "🛋️ پذیرایی"],
+        ["kitchen", "🍽️ آشپزخانه"],
+        ["bedroom_1", "🛏️ اتاق خواب 1"],
+        ["bedroom_2", "🛏️ اتاق خواب 2"],
+        ["bedroom_3", "🛏️ اتاق خواب 3"],
+        ["bedroom_4", "🛏️ اتاق خواب 4"],
+        ["bedroom_5", "🛏️ اتاق خواب 5"],
+        ["toilet_1", "🚽 سرویس بهداشتی 1"],
+        ["toilet_2", "🚽 سرویس بهداشتی 2"],
+    ]
+
+
+  // Function to handle user input for the value
+bot.on('message', (msg) => {
+const chatId = msg.chat.id;
+const text = msg.text;
+
+
+if(text == "/start" || text == "شروع مجدد"){
+    userUnits[chatId] = []
+    userData[chatId] = []
+    save_user_information(msg)
+
+
+        const keyboard = {
+        reply_markup: {
+            keyboard: [
+                ['شروع مجدد'], // First row with one button
+                ['خروجی اکسل']  // Second row with another button
+            ],
+            resize_keyboard: true, // Optional: resize the keyboard to fit
+            one_time_keyboard: true // Optional: hide the keyboard after a button is pressed
+        }
+    };
+    bot.sendMessage(chatId, '🔵🔵🔵*ربات تلگرامی نظام مهندسی*🔵🔵🔵', keyboard);
+
+    setTimeout(()=>{askOwnerName(chatId);}, 500)
+} 
+else if (userData[chatId].currentStep === 'enter_con_value') {
+  userUnits[chatId][userData[chatId].currentUnit].rooms[userData[chatId].currentRoom].sockets[userData[chatId].currentSocket].con = text;
+  userUnits[chatId][userData[chatId].currentUnit].rooms[userData[chatId].currentRoom].sockets.push({"pol" : NaN, "con" : NaN, "rcd": NaN, "loop" : NaN})
+  handle_socket_selection(parseInt(userData[chatId].currentSocket) + 1, chatId)
+}else if(text == "/output" || text == 'خروجی اکسل'){
+    // Generate the Excel data
+  console.log(userUnits[chatId][userData[chatId].currentUnit].rooms[userData[chatId].currentRoom].sockets)
+  const excelData = jsonToExcelData(userUnits[chatId]);
+
+  // Create a new workbook and add the data to a worksheet
+  const worksheet = XLSX.utils.json_to_sheet(excelData);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Units");
+
+  // Write the workbook to a file
+  console.log(userData[chatId].ownerName)
+
+  file_name = "output_" + userData[chatId].ownerName + "_" +  Date.now()
+  excel_file = file_name + ".xlsx"
+
+  XLSX.writeFile(workbook, excel_file);
+
+  console.log("Excel file created successfully.");
+
+   // Send the PDF to the user
+  
+  // Send the file to the user
+  bot.sendDocument(chatId, excel_file).then(() => {
+      // Clean up the file after sending
+      fs.unlinkSync(excel_file);
+  }).catch((error) => {
+      console.error('Error sending the file:', error);
+  });
+
+}
+});
+  
+
+// Function to handle callback queries
+bot.on('callback_query', (callbackQuery) => {
+    const chatId = callbackQuery.message.chat.id;
+    const data = callbackQuery.data;
+  
+  if (data.startsWith('unit_')) {
+    z = data.split('_')[1] - 1;
+    handleUnitSelection(chatId, z);
+  } else if(data == "return_to_room_selection"){
+    handleUnitSelection(chatId, userData[chatId].currentUnit)
+  } else if (data === 'return_to_units') {
+    showUnitsKeyboard(chatId); // Show the main menu again
+  
+  }else if (data === 'add_new_unit') {
+    addNewUnit(chatId);
+
+  } else if(data.startsWith('room_')){
+      room_index = data.split('_')[1];
+      handleRoomOptionSelection(chatId, room_index);
+  }else if (userData[chatId].currentStep === 'socket_selection') {
+        socket_index = data.split('_')[1];
+        handle_socket_selection(socket_index, chatId);
+  } else if (userData[chatId].currentStep === 'polarity_test') {
+      if (data === 'polarity_correct') {
+          userUnits[chatId][userData[chatId].currentUnit].rooms[userData[chatId].currentRoom].sockets[userData[chatId].currentSocket].pol = 1;
+      } else if (data === 'polarity_incorrect') {
+          userUnits[chatId][userData[chatId].currentUnit].rooms[userData[chatId].currentRoom].sockets[userData[chatId].currentSocket].pol = 0;
+      }else if(data === "return_to_socket_menu"){
+        handleRoomOptionSelection(chatId, userData[chatId].currentRoom)
+        return
+      }
+      y = parseInt(userData[chatId].currentSocket) + 1
+      bot.sendMessage(chatId, `مقدار پیوستگی پریز ${y}را وارد نمایید`).then(() => {
+          userData[chatId].currentStep = 'enter_con_value';
+        });
+      
+    }
+  });
+
+
+
+
+
+
+
+
+
+
+function save_user_information(msg){
+    const chatId = msg.chat.id;
+    const firstName = msg.chat.first_name;
+    const lastName = msg.chat.last_name;
+    
+    // Save user information
+    userData[chatId] = {
+        userId: chatId,
+        firstName: firstName,
+        lastName: lastName,
+        ownerName: null,
+        engineerName: null,
+        electricianName: null,
+        address: null,
+        unitMsgId: null, // Store the message ID for updating keyboard later
+        currentUnit:1,
+        currentRoom:1,
+        currentSocket:1,
+        currentSockets : []
+    };
+    
+    userUnits[chatId] = []
+    // Initialize units for the user
+    unit = 
+    {
+    number : 1,
+    name : "1 واحد",
+    rooms : []
+    }
+
+    for (let i = 0; i < rooms.length; i++) {
+    room = {
+        id: rooms[i][0],
+        name: rooms[i][1],
+        sockets: [{"pol" : NaN, "con" : NaN, "rcd": NaN, "loop" : NaN}]
+    };
+    unit.rooms.push(room);
+    }
+
+    userUnits[chatId].push(unit);
+
+    
+    // Start the data collection process
+}
+
+// Function to generate a keyboard layout
+function generateKeyboardLayout(units) {
+  const keyboard = [];
+  for (let i = 1; i <= units.length; i++) {
+    keyboard.push([{ text: `واحد ${i}`, callback_data: `unit_${i}` }]);
+  }
+  keyboard.push([{ text: 'اضافه کردن واحد جدید', callback_data: 'add_new_unit' }]);
+  return keyboard;
+}
+
+// Function to generate the detailed room options keyboard
+function generateRoomOptionsKeyboard() {
+    x = []
+    for(i = 0; i < rooms.length; i++){
+        x.push([{ text: rooms[i][1], callback_data: "room_" + i }])
+    }
+    x.push([{ text: '🔙 بازگشت به منوی انتخاب واحد', callback_data: 'return_to_units' }])
+    return x;
+}
+
+// Function to show main keyboard with buttons
+function showUnitsKeyboard(chatId) {
+  const keyboard = generateKeyboardLayout(userUnits[chatId]);
+
+  bot.sendMessage(chatId, `🟢*لطفاً یک واحد را انتخاب کنید:*`, {
+    reply_markup: {
+      inline_keyboard: keyboard
+    }, parse_mode: 'MarkdownV2'
+  }).then((sentMessage) => {
+    userData[chatId].unitMsgId = sentMessage.message_id; // Store the message ID for updating later
+    currentKeyboards[chatId] = keyboard; // Store the initial keyboard for comparison
+  });
+}
+
+
+
+// Function to handle unit selection
+function handleUnitSelection(chatId, unitId) {
+    userData[chatId].currentUnit = unitId;
+    bot.sendMessage(chatId, `✅شما واحد ${unitId + 1} را انتخاب کردید.`);
+
+    // Show detailed room options
+    setTimeout(()=>{bot.sendMessage(chatId, '🟢*لطفاً نوع فضا را انتخاب کنید*', {
+    reply_markup: {
+        inline_keyboard: generateRoomOptionsKeyboard()
+    }, parse_mode: 'MarkdownV2'
+    });}, 500)
+}
+
+function generateSocketSelectionKeyboard(chatId) {
+
+    sockets = userUnits[chatId][userData[chatId].currentUnit].rooms[userData[chatId].currentRoom].sockets
+    
+    x = []
+    for(i = 0; i < sockets.length; i++){
+        x.push([{ text: 'پریز' + (i + 1), callback_data: 'socket_' + i }])
+    }
+    x.push([{ text: "🔙بازگشت به منوی انتخاب فضا", callback_data: "return_to_room_selection" }])
+    return x;
+  }
+
+// Function to handle room option selection
+function handleRoomOptionSelection(chatId, room_index) {
+  userData[chatId].currentRoom = room_index;
+    bot.sendMessage(chatId, '*لطفاً یک پریز را انتخاب کنید*', {
+        reply_markup: {
+          inline_keyboard: generateSocketSelectionKeyboard(chatId)
+        }, parse_mode: 'MarkdownV2'
+      }).then(() => {
+        userData[chatId].currentStep = 'socket_selection';
+      });
+}
+
+// Function to add a new unit
+function addNewUnit(chatId) {
+    // Get the next unit number
+    const newUnitNumber = userUnits[chatId].length + 1;
+    unit = 
+    {
+    number : newUnitNumber,
+    name : "واحد" + newUnitNumber,
+    rooms : []
+    }
+
+    for (let i = 0; i < rooms.length; i++) {
+    room = {
+        id: rooms[i][0],
+        name: rooms[i][1],
+        sockets: [{"pol" : NaN, "con" : NaN, "rcd": NaN, "loop" : NaN}]
+    };
+    unit.rooms.push(room);
+    }
+
+
+    // Update units for the user
+    userUnits[chatId].push(unit)
+    showUnitsKeyboard(chatId)
+
+    
+
+    // // Create a new keyboard with updated buttons
+    // const newKeyboard = generateKeyboardLayout(userUnits[chatId]);
+
+    // bot.editMessageText('لطفاً یک گزینه را انتخاب کنید:', {
+    //     chat_id: chatId,
+    //     message_id: userData[chatId].unitMsgId,
+    //     reply_markup: {
+    //     inline_keyboard: newKeyboard
+    //     }
+    // }).catch(error => {
+    //     // Log the error if the message couldn't be updated
+    //     console.error('Error updating message:', error);
+    // });
+
+    // // Update the stored keyboard
+    // currentKeyboards[chatId] = newKeyboard;
+  
+}
+
+function handle_socket_selection(socket_index, chatId){
+  userData[chatId].currentSocket = socket_index;
+        bot.sendMessage(chatId, 'تست پلاریته پریز' + parseInt(socket_index + 1), {
+            reply_markup: {
+                inline_keyboard: [
+                [{ text: '✅ درست', callback_data: 'polarity_correct' }],
+                [{ text: '❌ نادرست', callback_data: 'polarity_incorrect' }],
+                [{ text: '🔙 بازگشت به منوی انتخاب پریز', callback_data: 'return_to_socket_menu' }]
+                ]
+            }
+            }).then(() => {
+            userData[chatId].currentStep = 'polarity_test';
+            });
+}
+
+
+
+// Convert JSON to a format suitable for Excel
+function jsonToExcelData(data) {
+  const rows = [];
+
+  // Iterate over each unit
+  data.forEach((unit) => {
+    // For each room in the unit
+    unit.rooms.forEach((room) => {
+      // For each socket in the room
+      room.sockets.forEach((socket, index) => {
+        if(!isNaN(socket.con))
+          rows.push({
+            UnitName: unit.name,
+            RoomName: room.name,
+            SocketIndex: index + 1,
+            Polarization: socket.pol ? 'Yes' : 'No',
+            Continuity: socket.con,
+            RCD: isNaN(socket.rcd) ? '-' : socket.rcd,
+            Loop: isNaN(socket.loop) ? '-' : socket.loop,
+          });
+      });
+    });
+  });
+
+  return rows;
+}
+
+
+//////////////////////////////////
+
+
+function askOwnerName(chatId) {
+  bot.sendMessage(chatId, '✍️ *نام مالک را وارد کنید*', { parse_mode: 'Markdown' });
+  bot.once('message', (msg) => {
+    const response = msg.text;
+    if(response == 'شروع مجدد' || response == 'خروجی اکسل' || response == '/start')
+      return
+    console.log("dfsdfsd")
+    if (response && response.trim()) {
+      userData[chatId].ownerName = response.trim();
+      askEngineerName(chatId);
+    } else {
+      bot.sendMessage(chatId, '⚠️ لطفاً نام معتبر وارد کنید.');
+      askOwnerName(chatId);
+    }
+  });
+}
+
+// Function to ask engineer name
+function askEngineerName(chatId) {
+  bot.sendMessage(chatId, '✍️ *نام مهندس ناظر را وارد کنید*', { parse_mode: 'Markdown' });
+  bot.once('message', (msg) => {
+    const response = msg.text;
+    if(response == 'شروع مجدد' || response == 'خروجی اکسل' || response == '/start')
+      return
+    if (response && response.trim()) {
+      userData[chatId].engineerName = response.trim();
+      askElectricianName(chatId);
+    } else {
+      bot.sendMessage(chatId, '⚠️ لطفاً نام معتبر وارد کنید.');
+      askEngineerName(chatId);
+    }
+  });
+}
+
+// Function to ask electrician name
+function askElectricianName(chatId) {
+  bot.sendMessage(chatId, '✍️ *نام برقکار را وارد کنید*', { parse_mode: 'Markdown' });
+  bot.once('message', (msg) => {
+    const response = msg.text;
+    if(response == 'شروع مجدد' || response == 'خروجی اکسل' || response == '/start')
+      return
+    if (response && response.trim()) {
+      userData[chatId].electricianName = response.trim();
+      askAddress(chatId);
+    } else {
+      bot.sendMessage(chatId, '⚠️ لطفاً نام معتبر وارد کنید.');
+      askElectricianName(chatId);
+    }
+  });
+}
+
+// Function to ask address
+function askAddress(chatId) {
+  bot.sendMessage(chatId, '✍️ *آدرس را وارد کنید*', { parse_mode: 'Markdown' });
+  bot.once('message', (msg) => {
+    const response = msg.text;
+    if(response == 'شروع مجدد' || response == 'خروجی اکسل' || response == '/start')
+      return
+    if (response && response.trim()) {
+      userData[chatId].address = response.trim();
+      showSummary(chatId);
+    } else {
+      bot.sendMessage(chatId, '⚠️ لطفاً آدرس معتبر وارد کنید.');
+      askAddress(chatId);
+    }
+  });
+}
+
+// Function to show summary
+function showSummary(chatId) {
+  const data = userData[chatId];
+  const summary = `
+*مشخصات*
+
+🤵‍♂️ *مالک:* ${data.ownerName}
+👨‍💼 *مهندس ناظر:* ${data.engineerName}
+🔌 *برقکار:* ${data.electricianName}
+🏠 *آدرس:* ${data.address}
+
+`;
+
+  bot.sendMessage(chatId, summary, { parse_mode: 'Markdown' });
+
+  // Show the unit selection menu
+  setTimeout(()=>{showUnitsKeyboard(chatId);}, 500)
+  
+}
+
